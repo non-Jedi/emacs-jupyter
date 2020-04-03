@@ -1810,14 +1810,14 @@ candidates can be used for PREFIX."
             (or (string= prefix "")
                 (not (eq (aref prefix (1- (length prefix))) ?\())))))
 
-(defun jupyter-completion-prefetch (fun)
+(defun jupyter-completion-prefetch (fun &optional client)
   "Get completions for the current completion context.
 Run FUN when the completions are available."
   (cl-destructuring-bind (code pos)
       (jupyter-code-context 'completion)
     (let ((req (let ((jupyter-inhibit-handlers t))
                  (jupyter-send-complete-request
-                     jupyter-current-client
+                     (or client jupyter-current-client)
                    :code code :pos pos))))
       (prog1 req
         (jupyter-add-callback req :complete-reply fun)))))
@@ -1892,6 +1892,29 @@ Run FUN when the completions are available."
        (lambda (arg) (get-text-property 0 'docsig arg))
        :company-doc-buffer
        #'jupyter-completion--company-doc-buffer))))
+
+(defun jupyter--completing-function (client)
+  "Return function for `completion-table-dynamic' using CLIENT.
+Returned function can be used with `completion-table-dynamic' to
+complete results using jupyter CLIENT as backend."
+  (lambda (prefix)
+    (let* (prefetch-cache
+           (req (jupyter-completion-prefetch
+                 (lambda (msg)
+                   (setq prefetch-cache msg))
+                 client)))
+      (and req (not (jupyter-request-idle-received-p req))
+           (not (eq (jupyter-message-type
+                     (jupyter-request-last-message req))
+                    :complete-reply))
+           ;; Introduce a delay so that we give a chance for the
+           ;; :complete-reply message to get handled.
+           (sit-for 0.1))
+      (and prefetch-cache
+           (jupyter-with-message-content prefetch-cache
+               (status matches metadata)
+             (and (equal status "ok")
+                  (jupyter-completion-construct-candidates matches metadata)))))))
 
 (defun jupyter-completion--company-doc-buffer (arg)
   "Send an inspect request for ARG to the kernel.
